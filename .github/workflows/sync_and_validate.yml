@@ -1,6 +1,5 @@
 name: Sync Upstream, Validate Links, and Push to TVB
 
-# 定时任务：每隔一天运行一次
 on:
   workflow_dispatch:
   schedule:
@@ -10,11 +9,10 @@ jobs:
   sync_validate_push:
     runs-on: ubuntu-latest
     
-    # 定义要操作的仓库信息
     env:
-      FORK_REPO: ${{ github.repository_owner }}/Tvbox1  # 你的Fork仓库路径
-      UPSTREAM_REPO: hd9211/Tvbox1 # 源仓库路径
-      TARGET_REPO: ${{ github.repository_owner }}/tvb # 目标私有仓库路径
+      FORK_REPO: ${{ github.repository_owner }}/Tvbox1
+      UPSTREAM_REPO: hd9211/Tvbox1
+      TARGET_REPO: ${{ github.repository_owner }}/tvb
 
     steps:
       - name: 1. Checkout YOUR FORK Repository (Tvbox1)
@@ -22,7 +20,7 @@ jobs:
         with:
           token: ${{ secrets.PAT_FOR_FORK }}
           repository: ${{ env.FORK_REPO }}
-          path: fork-repo # 签出到 'fork-repo' 目录
+          path: fork-repo
 
       - name: 2. Setup Git User in Fork Repo
         run: |
@@ -31,7 +29,7 @@ jobs:
 
       - name: 3. Sync from Upstream
         id: sync_step
-        working-directory: ./fork-repo # 在你的Fork仓库目录中执行
+        working-directory: ./fork-repo
         run: |
           git remote add upstream https://github.com/${{ env.UPSTREAM_REPO }}.git
           git fetch upstream
@@ -62,7 +60,6 @@ jobs:
       - name: 6. Create Validation Script
         if: env.HAS_UPDATES == 'true'
         run: |
-          # 脚本已更新，支持 'url', 'api', 'sourceUrl' 键名
           cat << 'EOF' > validate_links.py
           import json
           import requests
@@ -115,7 +112,6 @@ jobs:
               urls_to_check = []
               for item in items:
                   if isinstance(item, dict):
-                      # 依次检查 'url', 'api', 'sourceUrl'
                       url = item.get('url') or item.get('api') or item.get('sourceUrl')
                       if url:
                           urls_to_check.append((url, item))
@@ -156,7 +152,6 @@ jobs:
       - name: 7. Run Validation Script (on Fork files)
         if: env.HAS_UPDATES == 'true'
         run: |
-          # 文件路径现在是 fork-repo/...
           python validate_links.py fork-repo/优质.json fork-repo/cr.json fork-repo/duocang1.json
 
       - name: 8. Checkout Private Repo 'tvb'
@@ -170,7 +165,6 @@ jobs:
       - name: 9. Copy Filtered Files
         if: env.HAS_UPDATES == 'true'
         run: |
-          # 确保目标目录存在（解决 cp 错误）
           echo "Ensuring target directory exists..."
           mkdir -p tvb-repo/tvb/TVbox/
           
