@@ -20,7 +20,6 @@ jobs:
       - name: 1. Checkout YOUR FORK Repository (Tvbox1)
         uses: actions/checkout@v4
         with:
-          # 使用 PAT_FOR_FORK 来访问和修改你的 Tvbox1 Fork
           token: ${{ secrets.PAT_FOR_FORK }}
           repository: ${{ env.FORK_REPO }}
           path: fork-repo # 签出到 'fork-repo' 目录
@@ -34,11 +33,9 @@ jobs:
         id: sync_step
         working-directory: ./fork-repo # 在你的Fork仓库目录中执行
         run: |
-          # 添加源仓库
           git remote add upstream https://github.com/${{ env.UPSTREAM_REPO }}.git
           git fetch upstream
           
-          # 检查更新
           LOCAL=$(git rev-parse @)
           REMOTE=$(git rev-parse upstream/main)
           
@@ -47,15 +44,10 @@ jobs:
             echo "HAS_UPDATES=false" >> $GITHUB_ENV
           else
             echo "🔥 Upstream has updates. Syncing..."
-            # 强制同步并推送到你的 Fork
             git reset --hard upstream/main
             git push origin main --force
             echo "HAS_UPDATES=true" >> $GITHUB_ENV
           fi
-
-      # -------------------------------------------------------------------
-      # 后续步骤仅在有更新时执行
-      # -------------------------------------------------------------------
 
       - name: 4. Setup Python
         if: env.HAS_UPDATES == 'true'
@@ -70,7 +62,7 @@ jobs:
       - name: 6. Create Validation Script
         if: env.HAS_UPDATES == 'true'
         run: |
-          # 脚本内容不变，仍然创建在Action的根工作目录
+          # 脚本已更新，支持 'url', 'api', 'sourceUrl' 键名
           cat << 'EOF' > validate_links.py
           import json
           import requests
@@ -82,7 +74,6 @@ jobs:
           TIMEOUT = 8
 
           def check_url(url):
-              # ... (Python 脚本代码不变，为节省空间省略，请使用之前完整的代码) ...
               if not url or not url.startswith(('http://', 'https://')):
                   print(f"SKIPPING: Invalid URL format {url}")
                   return False, url
@@ -124,11 +115,12 @@ jobs:
               urls_to_check = []
               for item in items:
                   if isinstance(item, dict):
-                      url = item.get('url') or item.get('api')
+                      # 依次检查 'url', 'api', 'sourceUrl'
+                      url = item.get('url') or item.get('api') or item.get('sourceUrl')
                       if url:
                           urls_to_check.append((url, item))
                       else:
-                          print(f"SKIPPING item: No 'url' or 'api' key found in {item}")
+                          print(f"SKIPPING item: No known URL key ('url', 'api', or 'sourceUrl') found in {item}")
 
               if not urls_to_check:
                   print(f"No URLs found to check in {filepath}.")
@@ -164,7 +156,7 @@ jobs:
       - name: 7. Run Validation Script (on Fork files)
         if: env.HAS_UPDATES == 'true'
         run: |
-          # 从 fork-repo 目录读取文件，在 Action 根目录运行脚本
+          # 文件路径现在是 fork-repo/...
           python validate_links.py fork-repo/优质.json fork-repo/cr.json fork-repo/duocang1.json
 
       - name: 8. Checkout Private Repo 'tvb'
@@ -178,12 +170,11 @@ jobs:
       - name: 9. Copy Filtered Files
         if: env.HAS_UPDATES == 'true'
         run: |
-          # 确保目标目录存在（解决上次的错误）
+          # 确保目标目录存在（解决 cp 错误）
           echo "Ensuring target directory exists..."
           mkdir -p tvb-repo/tvb/TVbox/
           
           echo "Copying validated files to tvb-repo/tvb/TVbox/..."
-          # 注意：现在源文件路径是 fork-repo/...
           cp fork-repo/优质.json tvb-repo/tvb/TVbox/
           cp fork-repo/cr.json tvb-repo/tvb/TVbox/
           cp fork-repo/duocang1.json tvb-repo/tvb/TVbox/
