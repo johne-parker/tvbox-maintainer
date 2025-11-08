@@ -1,4 +1,4 @@
-name: Sync Upstream, Validate Links, and Push to TVB
+name: Check Upstream, Validate Links, and Push to TVB
 
 on:
   workflow_dispatch:
@@ -6,59 +6,29 @@ on:
     - cron: '0 0 */2 * *'
 
 jobs:
-  sync_validate_push:
+  validate_and_push:
     runs-on: ubuntu-latest
     
+    # 定义要操作的仓库信息
     env:
-      FORK_REPO: ${{ github.repository_owner }}/Tvbox1
       UPSTREAM_REPO: hd9211/Tvbox1
       TARGET_REPO: ${{ github.repository_owner }}/tvb
 
     steps:
-      - name: 1. Checkout YOUR FORK Repository (Tvbox1)
+      - name: 1. Checkout UPSTREAM Repository (hd9211/Tvbox1)
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.PAT_FOR_FORK }}
-          repository: ${{ env.FORK_REPO }}
-          path: fork-repo
+          # 直接签出源仓库的代码，无需 PAT
+          repository: ${{ env.UPSTREAM_REPO }}
+          path: upstream-repo
 
-      - name: 2. Setup Git User in Fork Repo
-        run: |
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-
-      - name: 3. Sync from Upstream
-        id: sync_step
-        working-directory: ./fork-repo
-        run: |
-          git remote add upstream https://github.com/${{ env.UPSTREAM_REPO }}.git
-          git fetch upstream
-          
-          LOCAL=$(git rev-parse @)
-          REMOTE=$(git rev-parse upstream/main)
-          
-          if [ "$LOCAL" = "$REMOTE" ]; then
-            echo "✅ Fork is up-to-date. No new commits from upstream."
-            echo "HAS_UPDATES=false" >> $GITHUB_ENV
-          else
-            echo "🔥 Upstream has updates. Syncing..."
-            git reset --hard upstream/main
-            git push origin main --force
-            echo "HAS_UPDATES=true" >> $GITHUB_ENV
-          fi
-
-      - name: 4. Setup Python
-        if: env.HAS_UPDATES == 'true'
+      - name: 2. Setup Python and Install Dependencies
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+      - run: pip install requests
 
-      - name: 5. Install Python Dependencies
-        if: env.HAS_UPDATES == 'true'
-        run: pip install requests
-
-      - name: 6. Create Validation Script
-        if: env.HAS_UPDATES == 'true'
+      - name: 3. Create Validation Script
         run: |
           cat << 'EOF' > validate_links.py
           import json
@@ -149,42 +119,38 @@ jobs:
           EOF
 
 
-      - name: 7. Run Validation Script (on Fork files)
-        if: env.HAS_UPDATES == 'true'
+      - name: 4. Run Validation Script (on Upstream files)
         run: |
-          python validate_links.py fork-repo/优质.json fork-repo/cr.json fork-repo/duocang1.json
+          # 直接对签出的源仓库文件进行验证和修改
+          python validate_links.py upstream-repo/优质.json upstream-repo/cr.json upstream-repo/duocang1.json
 
-      - name: 8. Checkout Private Repo 'tvb'
-        if: env.HAS_UPDATES == 'true'
+      - name: 5. Checkout Private Repo 'tvb'
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.PAT_FOR_TVB }} 
           repository: ${{ env.TARGET_REPO }}
           path: tvb-repo
           
-      - name: 9. Copy Filtered Files
-        if: env.HAS_UPDATES == 'true'
+      - name: 6. Copy Filtered Files and Push
         run: |
-          echo "Ensuring target directory exists..."
+          # 确保目标目录存在（解决 cp 错误）
           mkdir -p tvb-repo/tvb/TVbox/
           
-          echo "Copying validated files to tvb-repo/tvb/TVbox/..."
-          cp fork-repo/优质.json tvb-repo/tvb/TVbox/
-          cp fork-repo/cr.json tvb-repo/tvb/TVbox/
-          cp fork-repo/duocang1.json tvb-repo/tvb/TVbox/
+          # 拷贝文件
+          cp upstream-repo/优质.json tvb-repo/tvb/TVbox/
+          cp upstream-repo/cr.json tvb-repo/tvb/TVbox/
+          cp upstream-repo/duocang1.json tvb-repo/tvb/TVbox/
           
-      - name: 10. Commit and Push to 'tvb'
-        if: env.HAS_UPDATES == 'true'
-        run: |
           cd tvb-repo
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           
+          # 只有当文件有变化时才提交和推送
           if [ -n "$(git status --porcelain)" ]; then
             git add .
-            git commit -m "chore: Auto-update and validate Tvbox sources"
+            git commit -m "chore: Auto-update and validate Tvbox sources from upstream"
             git push
             echo "✅ Successfully pushed validated files to tvb repo."
           else
-            echo "ℹ️ No changes to commit."
+            echo "ℹ️ No changes to commit to tvb repo."
           fi
