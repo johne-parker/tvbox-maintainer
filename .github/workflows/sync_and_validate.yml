@@ -1,7 +1,8 @@
-name: Check Upstream, Validate Links, and Push to TVB
+name: Auto-Validate and Push to TVB on Upstream Change
 
 on:
   workflow_dispatch:
+  # 定时任务：每隔一天运行一次，确保不会错过更新
   schedule:
     - cron: '0 0 */2 * *'
 
@@ -9,26 +10,71 @@ jobs:
   validate_and_push:
     runs-on: ubuntu-latest
     
-    # 定义要操作的仓库信息
     env:
       UPSTREAM_REPO: hd9211/Tvbox1
       TARGET_REPO: ${{ github.repository_owner }}/tvb
+      UPSTREAM_BRANCH: main
+      TARGET_BRANCH: main # 假设 tvb 仓库的主分支也是 main
 
     steps:
-      - name: 1. Checkout UPSTREAM Repository (hd9211/Tvbox1)
+      - name: 1. Checkout TARGET Repo (tvb)
         uses: actions/checkout@v4
         with:
-          # 直接签出源仓库的代码，无需 PAT
+          # 签出 tvb 仓库，用于获取上次提交的SHA
+          token: ${{ secrets.PAT_FOR_TVB }} 
+          repository: ${{ env.TARGET_REPO }}
+          path: tvb-repo
+          ref: ${{ env.TARGET_BRANCH }}
+
+      - name: 2. Get Last Upstream Commit SHA
+        id: get_sha
+        run: |
+          # 获取源仓库的最新提交SHA
+          UPSTREAM_SHA=$(git ls-remote https://github.com/${{ env.UPSTREAM_REPO }}.git ${{ env.UPSTREAM_BRANCH }} | awk '{print $1}')
+          
+          # 检查 tvb 仓库中是否存有上次的SHA记录文件
+          SHA_FILE="tvb-repo/last_upstream_sha.txt"
+          
+          if [ -f "$SHA_FILE" ]; then
+            LAST_SHA=$(cat "$SHA_FILE")
+            echo "上次记录的源仓库 SHA: $LAST_SHA"
+            echo "源仓库最新 SHA: $UPSTREAM_SHA"
+            
+            if [ "$LAST_SHA" = "$UPSTREAM_SHA" ]; then
+              echo "✅ 源仓库无新提交。跳过后续步骤。"
+              echo "HAS_UPDATES=false" >> $GITHUB_ENV
+            else
+              echo "🔥 源仓库有新提交。继续验证。"
+              echo "HAS_UPDATES=true" >> $GITHUB_ENV
+            fi
+          else
+            echo "⚠️ 首次运行或SHA文件丢失。默认继续运行。"
+            echo "HAS_UPDATES=true" >> $GITHUB_ENV
+          fi
+          
+          echo "UPSTREAM_SHA=$UPSTREAM_SHA" >> $GITHUB_ENV
+      
+      # -------------------------------------------------------------------
+      # 只有在 HAS_UPDATES=true 时才运行以下步骤
+      # -------------------------------------------------------------------
+
+      - name: 3. Checkout UPSTREAM Repo Code
+        if: env.HAS_UPDATES == 'true'
+        uses: actions/checkout@v4
+        with:
           repository: ${{ env.UPSTREAM_REPO }}
           path: upstream-repo
 
-      - name: 2. Setup Python and Install Dependencies
+      - name: 4. Setup Python and Install Dependencies
+        if: env.HAS_UPDATES == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-      - run: pip install requests
+      - if: env.HAS_UPDATES == 'true'
+        run: pip install requests
 
-      - name: 3. Create Validation Script
+      - name: 5. Create Validation Script
+        if: env.HAS_UPDATES == 'true'
         run: |
           cat << 'EOF' > validate_links.py
           import json
@@ -118,39 +164,43 @@ jobs:
                   process_file(f)
           EOF
 
-
-      - name: 4. Run Validation Script (on Upstream files)
+      - name: 6. Run Validation Script
+        if: env.HAS_UPDATES == 'true'
         run: |
-          # 直接对签出的源仓库文件进行验证和修改
           python validate_links.py upstream-repo/优质.json upstream-repo/cr.json upstream-repo/duocang1.json
 
-      - name: 5. Checkout Private Repo 'tvb'
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.PAT_FOR_TVB }} 
-          repository: ${{ env.TARGET_REPO }}
-          path: tvb-repo
-          
-      - name: 6. Copy Filtered Files and Push
+      - name: 7. Copy Filtered Files and Push to TVB
+        if: env.HAS_UPDATES == 'true'
         run: |
-          # 确保目标目录存在（解决 cp 错误）
-          mkdir -p tvb-repo/tvb/TVbox/
+          cd tvb-repo
+          
+          # 确保目标目录存在
+          mkdir -p tvb/TVbox/
           
           # 拷贝文件
-          cp upstream-repo/优质.json tvb-repo/tvb/TVbox/
-          cp upstream-repo/cr.json tvb-repo/tvb/TVbox/
-          cp upstream-repo/duocang1.json tvb-repo/tvb/TVbox/
+          cp ../upstream-repo/优质.json tvb/TVbox/
+          cp ../upstream-repo/cr.json tvb/TVbox/
+          cp ../upstream-repo/duocang1.json tvb/TVbox/
           
-          cd tvb-repo
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
           
-          # 只有当文件有变化时才提交和推送
           if [ -n "$(git status --porcelain)" ]; then
             git add .
-            git commit -m "chore: Auto-update and validate Tvbox sources from upstream"
-            git push
+            git commit -m "chore: Auto-update and validate Tvbox sources from upstream (SHA: ${{ env.UPSTREAM_SHA }})"
+            
+            # *** 关键：记录最新的源仓库 SHA 到 tvb 仓库中 ***
+            echo "${{ env.UPSTREAM_SHA }}" > last_upstream_sha.txt
+            git add last_upstream_sha.txt
+            git commit --amend --no-edit # 将 SHA 文件加入到上次的提交中
+            
+            git push origin ${{ env.TARGET_BRANCH }}
             echo "✅ Successfully pushed validated files to tvb repo."
           else
-            echo "ℹ️ No changes to commit to tvb repo."
+            # 如果文件没有变化，我们仍需要更新 SHA 文件，确保下次不会重复运行。
+            echo "${{ env.UPSTREAM_SHA }}" > last_upstream_sha.txt
+            git add last_upstream_sha.txt
+            git commit -m "chore: Update last_upstream_sha.txt (SHA: ${{ env.UPSTREAM_SHA }}) - No file changes"
+            git push origin ${{ env.TARGET_BRANCH }}
+            echo "ℹ️ Files unchanged, but updated last_upstream_sha.txt to avoid rerunning."
           fi
