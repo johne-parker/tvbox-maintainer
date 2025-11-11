@@ -14,13 +14,12 @@ jobs:
       UPSTREAM_REPO: hd9211/Tvbox1
       TARGET_REPO: ${{ github.repository_owner }}/tvb
       UPSTREAM_BRANCH: main
-      TARGET_BRANCH: main # 假设 tvb 仓库的主分支也是 main
+      TARGET_BRANCH: main
 
     steps:
       - name: 1. Checkout TARGET Repo (tvb)
         uses: actions/checkout@v4
         with:
-          # 签出 tvb 仓库，用于获取上次提交的SHA
           token: ${{ secrets.PAT_FOR_TVB }} 
           repository: ${{ env.TARGET_REPO }}
           path: tvb-repo
@@ -54,10 +53,6 @@ jobs:
           
           echo "UPSTREAM_SHA=$UPSTREAM_SHA" >> $GITHUB_ENV
       
-      # -------------------------------------------------------------------
-      # 只有在 HAS_UPDATES=true 时才运行以下步骤
-      # -------------------------------------------------------------------
-
       - name: 3. Checkout UPSTREAM Repo Code
         if: env.HAS_UPDATES == 'true'
         uses: actions/checkout@v4
@@ -73,7 +68,7 @@ jobs:
       - if: env.HAS_UPDATES == 'true'
         run: pip install requests
 
-      - name: 5. Create Validation Script
+      - name: 5. Create Validation Script (with JSON Error Handling)
         if: env.HAS_UPDATES == 'true'
         run: |
           cat << 'EOF' > validate_links.py
@@ -108,11 +103,48 @@ jobs:
                   return
 
               print(f"\nProcessing file: {filepath}")
+              
+              data = None
               try:
                   with open(filepath, 'r', encoding='utf-8') as f:
-                      data = json.load(f)
-              except Exception as e:
+                      content = f.read()
+                      content = content.strip()
+                      data = json.loads(content)
+                      
+              except json.JSONDecodeError as e:
                   print(f"Error reading or decoding {filepath}: {e}")
+                  print("Attempting to fix common TVBox JSON errors...")
+                  
+                  try:
+                      start_curly = content.find('{')
+                      end_curly = content.rfind('}')
+                      start_square = content.find('[')
+                      end_square = content.rfind(']')
+                      
+                      # 确定主要结构是对象还是数组，取范围最大的
+                      if start_curly != -1 and end_curly != -1 and end_curly > start_curly:
+                          start = start_curly
+                          end = end_curly
+                      elif start_square != -1 and end_square != -1 and end_square > start_square:
+                          start = start_square
+                          end = end_square
+                      else:
+                           print("Could not find valid JSON delimiters. Skipping file.")
+                           return # 无法修复，跳过
+                           
+                      # 截取可能是有效 JSON 的部分
+                      fixed_content = content[start:end+1]
+                      data = json.loads(fixed_content)
+                      print("Successfully fixed and loaded content.")
+                           
+                  except Exception as fix_e:
+                      print(f"Fix failed: {fix_e}. Skipping file.")
+                      return # 修复再次失败，跳过
+              except Exception as e:
+                  print(f"Error reading {filepath}: {e}")
+                  return
+
+              if data is None:
                   return
 
               key_list = None
@@ -185,22 +217,23 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
           
+          # 检查是否有内容变化 (包括链接验证导致的修改)
           if [ -n "$(git status --porcelain)" ]; then
             git add .
             git commit -m "chore: Auto-update and validate Tvbox sources from upstream (SHA: ${{ env.UPSTREAM_SHA }})"
             
-            # *** 关键：记录最新的源仓库 SHA 到 tvb 仓库中 ***
+            # 记录最新的源仓库 SHA 到 tvb 仓库中，并修正到上次提交
             echo "${{ env.UPSTREAM_SHA }}" > last_upstream_sha.txt
             git add last_upstream_sha.txt
-            git commit --amend --no-edit # 将 SHA 文件加入到上次的提交中
+            git commit --amend --no-edit
             
             git push origin ${{ env.TARGET_BRANCH }}
-            echo "✅ Successfully pushed validated files to tvb repo."
+            echo "✅ Successfully pushed validated files and updated SHA to tvb repo."
           else
-            # 如果文件没有变化，我们仍需要更新 SHA 文件，确保下次不会重复运行。
+            # 如果文件没有变化，只更新 SHA 文件
             echo "${{ env.UPSTREAM_SHA }}" > last_upstream_sha.txt
             git add last_upstream_sha.txt
-            git commit -m "chore: Update last_upstream_sha.txt (SHA: ${{ env.UPSTREAM_SHA }}) - No file changes"
+            git commit -m "chore: Update last_upstream_sha.txt (SHA: ${{ env.UPSTREAM_SHA }}) - No file changes or validation needed"
             git push origin ${{ env.TARGET_BRANCH }}
-            echo "ℹ️ Files unchanged, but updated last_upstream_sha.txt to avoid rerunning."
+            echo "ℹ️ Files unchanged, but updated last_upstream_sha.txt to avoid rerunning next time."
           fi
