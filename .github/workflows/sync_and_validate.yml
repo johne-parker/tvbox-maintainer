@@ -2,7 +2,6 @@ name: Auto-Validate and Push to TVB on Upstream Change
 
 on:
   workflow_dispatch:
-  # 定时任务：每隔一天运行一次，确保不会错过更新
   schedule:
     - cron: '0 0 */2 * *'
 
@@ -28,10 +27,8 @@ jobs:
       - name: 2. Get Last Upstream Commit SHA
         id: get_sha
         run: |
-          # 获取源仓库的最新提交SHA
           UPSTREAM_SHA=$(git ls-remote https://github.com/${{ env.UPSTREAM_REPO }}.git ${{ env.UPSTREAM_BRANCH }} | awk '{print $1}')
           
-          # 检查 tvb 仓库中是否存有上次的SHA记录文件
           SHA_FILE="tvb-repo/last_upstream_sha.txt"
           
           if [ -f "$SHA_FILE" ]; then
@@ -68,7 +65,7 @@ jobs:
       - if: env.HAS_UPDATES == 'true'
         run: pip install requests
 
-      - name: 5. Create Validation Script (with JSON Error Handling)
+      - name: 5. Create Validation Script (with JSON Comment Removal)
         if: env.HAS_UPDATES == 'true'
         run: |
           cat << 'EOF' > validate_links.py
@@ -107,21 +104,30 @@ jobs:
               data = None
               try:
                   with open(filepath, 'r', encoding='utf-8') as f:
-                      content = f.read()
-                      content = content.strip()
+                      content_lines = f.readlines()
+                      
+                      # *** 新增：移除 // 开头的注释行 ***
+                      cleaned_lines = []
+                      for line in content_lines:
+                          stripped_line = line.lstrip()
+                          if not stripped_line.startswith('//'):
+                              cleaned_lines.append(line)
+                      
+                      content = "".join(cleaned_lines)
+                      content = content.strip() 
                       data = json.loads(content)
                       
               except json.JSONDecodeError as e:
                   print(f"Error reading or decoding {filepath}: {e}")
                   print("Attempting to fix common TVBox JSON errors...")
                   
+                  # JSON 容错处理 (保留，以防其他非注释格式错误)
                   try:
                       start_curly = content.find('{')
                       end_curly = content.rfind('}')
                       start_square = content.find('[')
                       end_square = content.rfind(']')
                       
-                      # 确定主要结构是对象还是数组，取范围最大的
                       if start_curly != -1 and end_curly != -1 and end_curly > start_curly:
                           start = start_curly
                           end = end_curly
@@ -130,16 +136,15 @@ jobs:
                           end = end_square
                       else:
                            print("Could not find valid JSON delimiters. Skipping file.")
-                           return # 无法修复，跳过
+                           return
                            
-                      # 截取可能是有效 JSON 的部分
                       fixed_content = content[start:end+1]
                       data = json.loads(fixed_content)
                       print("Successfully fixed and loaded content.")
                            
                   except Exception as fix_e:
                       print(f"Fix failed: {fix_e}. Skipping file.")
-                      return # 修复再次失败，跳过
+                      return
               except Exception as e:
                   print(f"Error reading {filepath}: {e}")
                   return
@@ -180,6 +185,7 @@ jobs:
 
               data[key_list] = valid_items
               try:
+                  # 注意：这里我们写入的文件不含注释，格式更规范
                   with open(filepath, 'w', encoding='utf-8') as f:
                       json.dump(data, f, ensure_ascii=False, indent=4)
                   print(f"Processed {filepath}. Kept {len(valid_items)} / {len(items)} items.")
@@ -206,10 +212,9 @@ jobs:
         run: |
           cd tvb-repo
           
-          # 确保目标目录存在
           mkdir -p tvb/TVbox/
           
-          # 拷贝文件
+          # 拷贝文件 (此时 upstream-repo 中的文件已被验证脚本修改)
           cp ../upstream-repo/优质.json tvb/TVbox/
           cp ../upstream-repo/cr.json tvb/TVbox/
           cp ../upstream-repo/duocang1.json tvb/TVbox/
@@ -217,12 +222,10 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
           
-          # 检查是否有内容变化 (包括链接验证导致的修改)
           if [ -n "$(git status --porcelain)" ]; then
             git add .
             git commit -m "chore: Auto-update and validate Tvbox sources from upstream (SHA: ${{ env.UPSTREAM_SHA }})"
             
-            # 记录最新的源仓库 SHA 到 tvb 仓库中，并修正到上次提交
             echo "${{ env.UPSTREAM_SHA }}" > last_upstream_sha.txt
             git add last_upstream_sha.txt
             git commit --amend --no-edit
@@ -230,7 +233,6 @@ jobs:
             git push origin ${{ env.TARGET_BRANCH }}
             echo "✅ Successfully pushed validated files and updated SHA to tvb repo."
           else
-            # 如果文件没有变化，只更新 SHA 文件
             echo "${{ env.UPSTREAM_SHA }}" > last_upstream_sha.txt
             git add last_upstream_sha.txt
             git commit -m "chore: Update last_upstream_sha.txt (SHA: ${{ env.UPSTREAM_SHA }}) - No file changes or validation needed"
