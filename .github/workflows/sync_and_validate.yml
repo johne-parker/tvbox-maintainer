@@ -65,7 +65,7 @@ jobs:
       - if: env.HAS_UPDATES == 'true'
         run: pip install requests
 
-      - name: 5. Create Validation Script (with JSON Comment Removal)
+      - name: 5. Create Validation Script (Final Version)
         if: env.HAS_UPDATES == 'true'
         run: |
           cat << 'EOF' > validate_links.py
@@ -106,7 +106,7 @@ jobs:
                   with open(filepath, 'r', encoding='utf-8') as f:
                       content_lines = f.readlines()
                       
-                      # *** 新增：移除 // 开头的注释行 ***
+                      # 移除 // 开头的注释行
                       cleaned_lines = []
                       for line in content_lines:
                           stripped_line = line.lstrip()
@@ -153,10 +153,14 @@ jobs:
                   return
 
               key_list = None
+              # *** 最终修复：增加对 'storeHouse' 键的识别 ***
               if 'sites' in data and isinstance(data['sites'], list):
                   key_list = 'sites'
               elif 'urls' in data and isinstance(data['urls'], list):
                   key_list = 'urls'
+              elif 'storeHouse' in data and isinstance(data['storeHouse'], list):
+                  key_list = 'storeHouse'
+              # *** 修复结束 ***
               else:
                   print(f"Unknown JSON structure in {filepath}. Skipping.")
                   return
@@ -165,6 +169,7 @@ jobs:
               urls_to_check = []
               for item in items:
                   if isinstance(item, dict):
+                      # 识别 'url', 'api', 'sourceUrl' 键
                       url = item.get('url') or item.get('api') or item.get('sourceUrl')
                       if url:
                           urls_to_check.append((url, item))
@@ -185,7 +190,6 @@ jobs:
 
               data[key_list] = valid_items
               try:
-                  # 注意：这里我们写入的文件不含注释，格式更规范
                   with open(filepath, 'w', encoding='utf-8') as f:
                       json.dump(data, f, ensure_ascii=False, indent=4)
                   print(f"Processed {filepath}. Kept {len(valid_items)} / {len(items)} items.")
@@ -214,7 +218,6 @@ jobs:
           
           mkdir -p tvb/TVbox/
           
-          # 拷贝文件 (此时 upstream-repo 中的文件已被验证脚本修改)
           cp ../upstream-repo/优质.json tvb/TVbox/
           cp ../upstream-repo/cr.json tvb/TVbox/
           cp ../upstream-repo/duocang1.json tvb/TVbox/
